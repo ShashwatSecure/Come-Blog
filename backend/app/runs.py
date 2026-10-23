@@ -1,19 +1,30 @@
 import datetime as dt
 import os
 import uuid
+import time
+from typing import cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from slugify import slugify
 
 from app.config import settings
+from app.graph.build import build_graph
 from app.graph.llm import get_llm
+from app.graph.state import BlogState
+from app.logging_config import logger
 
 
 class BlogEvaluation(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     feedback: str
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def normalize_score(cls, value: float) -> float:
+        numeric_score = float(value)
+        return numeric_score / 100 if numeric_score > 1 else numeric_score
 
 
 class DraftAttempt(BaseModel):
@@ -65,6 +76,53 @@ def _evaluate_blog(topic: str, draft: str) -> BlogEvaluation:
 
 
 def generate_blog(topic: str) -> tuple[str, str, list[DraftAttempt]]:
+    result = run_blog_graph(topic)
+    return (
+        cast(str, result["markdown"]),
+        cast(str, result["output_path"]),
+        cast(list[DraftAttempt], result["attempts"]),
+    )
+
+
+def run_blog_graph(topic: str, request_id: str | None = None) -> dict[str, object]:
+    run_id = str(uuid.uuid4())
+    started = time.perf_counter()
+    logger.info("graph_started", extra={"event": "graph_started", "run_id": run_id, "request_id": request_id, "topic_length": len(topic)})
+    try:
+        result = build_graph().invoke(
+            BlogState(topic=topic),
+            config={"configurable": {"run_id": run_id, "request_id": request_id}},
+        )
+    except Exception:
+        logger.exception(
+            "graph_failed",
+            extra={"event": "graph_failed", "run_id": run_id, "request_id": request_id, "duration_ms": round((time.perf_counter() - started) * 1000, 2)},
+        )
+        raise
+    logger.info(
+        "graph_completed",
+        extra={"event": "graph_completed", "run_id": run_id, "request_id": request_id, "duration_ms": round((time.perf_counter() - started) * 1000, 2), "attempt": result.get("attempt", 1), "strong_points": len(result.get("strong_points", []))},
+    )
+    evaluation = result.get("evaluation")
+    attempts = [
+        DraftAttempt(
+            iteration=result.get("attempt", 1),
+            draft=result.get("draft", ""),
+            score=evaluation.score if evaluation else None,
+            feedback=evaluation.feedback if evaluation else "",
+        )
+    ]
+    return {
+        "topic": topic,
+        "summary": result.get("summary", ""),
+        "strong_points": result.get("strong_points", []),
+        "markdown": result["final_markdown"],
+        "output_path": result["output_path"],
+        "attempts": attempts,
+    }
+
+
+def generate_blog_legacy(topic: str) -> tuple[str, str, list[DraftAttempt]]:
     attempts: list[DraftAttempt] = []
     feedback = ""
     markdown = ""

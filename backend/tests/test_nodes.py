@@ -1,4 +1,5 @@
 from app.graph.nodes import (
+    BlogEvaluation,
     accept_section,
     evaluator_node,
     orchestrator_node,
@@ -8,6 +9,11 @@ from app.graph.nodes import (
     worker_node,
     write_markdown_node,
 )
+
+
+def test_blog_evaluation_normalizes_percentage_score():
+    evaluation = BlogEvaluation(score=100, passed=True, feedback="ready")
+    assert evaluation.score == 1.0
 from app.graph.state import BlogState, SectionDraft, SectionEvaluation, SectionPlan, SectionWorkState
 
 

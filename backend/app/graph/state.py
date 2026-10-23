@@ -1,7 +1,7 @@
 import operator
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SectionPlan(BaseModel):
@@ -31,6 +31,18 @@ class SectionEvaluation(BaseModel):
     feedback: str
 
 
+class BlogEvaluation(BaseModel):
+    score: float = Field(ge=0.0, le=1.0)
+    passed: bool
+    feedback: str
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def normalize_score(cls, value: float) -> float:
+        numeric_score = float(value)
+        return numeric_score / 100 if numeric_score > 1 else numeric_score
+
+
 def _merge_dict(left: dict, right: dict) -> dict:
     merged = dict(left)
     merged.update(right)
@@ -42,6 +54,11 @@ class BlogState(BaseModel):
 
     topic: str
     blog_title: str = ""
+    summary: str = ""
+    strong_points: list[str] = Field(default_factory=list)
+    draft: str = ""
+    evaluation: BlogEvaluation | None = None
+    attempt: int = 1
     sections: list[SectionPlan] = Field(default_factory=list)
 
     # Keyed by section id. Annotated with a merge reducer so parallel
