@@ -97,3 +97,73 @@ Topic
 - Draft history is returned after generation rather than streamed live during each evaluator call.
 - The evaluator model must be installed locally and may be CPU-bound.
 - The next improvement should be bounded progress reporting for each draft/evaluation stage, followed by stronger response schemas and integration tests for forced retry cases.
+
+## 9. Return to LangGraph with a simpler flow
+
+- Reintroduced LangGraph as the active `/blogs` execution path, keeping the
+  design intentionally sequential:
+
+```text
+START
+  -> orchestrator
+  -> generator
+  -> evaluator
+  -> writer
+  -> END
+```
+
+- The orchestrator now returns a blog title, a concise 3-4 line summary, and
+  exactly five strong points that should be covered by the article.
+- The generator uses the topic and five points to write a simple 10-sentence
+  draft.
+- The evaluator can route the draft back to the generator with feedback, with a
+  hard maximum of three attempts.
+- The writer saves the accepted result as a downloadable Markdown file.
+- Dynamic fan-out, parallel workers, reducer logic, and section subgraphs are
+  deliberately not part of this first working graph version.
+
+## 10. Production-oriented backend logging
+
+- Added structured JSON logging for HTTP requests, graph runs, and individual
+  graph nodes.
+- Each request and graph run records a correlation ID, start/completion event,
+  status, duration, and failure traceback where applicable.
+- Node logs record the node name and execution duration, making slow Ollama
+  calls and failed graph stages visible without logging prompts or generated
+  article content.
+- Request IDs are propagated from FastAPI into the LangGraph configuration so
+  HTTP, graph, and node events can be correlated.
+
+## 11. Evaluator robustness fixes
+
+- Local evaluator models sometimes returned percentage scores such as `100`
+  instead of decimal scores such as `1.0`.
+- Added score normalization at the shared state model boundary, so values like
+  `100` and `70` become `1.0` and `0.7` while the internal threshold remains
+  `0.7`.
+- Unified the evaluator output model used by the node and `BlogState` to avoid
+  Pydantic validation failures between graph steps.
+- Tightened the evaluator prompt to request a decimal score from `0.0` to `1.0`.
+
+## 12. Markdown output format
+
+- Removed YAML frontmatter from generated Markdown files.
+- The writer now produces exactly one title heading followed by the article
+  body:
+
+```markdown
+# Article title
+
+Article content...
+```
+
+- The writer also defensively removes frontmatter, duplicate leading titles,
+  and surrounding whitespace if an upstream result includes them.
+
+## 13. Current verified state
+
+- Backend regression suite: **11 tests passed**.
+- Score normalization check: `BlogEvaluation(score=100, ...)` produces `1.0`.
+- Markdown writer test: passed with the title-and-content-only format.
+- Graph compilation: successful as a `CompiledStateGraph`.
+- Live generation still requires Ollama and both configured local models.

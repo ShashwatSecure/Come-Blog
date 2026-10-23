@@ -154,8 +154,6 @@ Configuration is loaded from `.env` using the `COMEBLOG_` prefix.
 | `COMEBLOG_OLLAMA_MODEL` | `qwen2.5:3b` | Writer model |
 | `COMEBLOG_EVALUATOR_MODEL` | `qwen3:4b` | Evaluation model |
 | `COMEBLOG_OLLAMA_TEMPERATURE` | `0.4` | Writer/evaluator temperature |
-| `COMEBLOG_EVALUATOR_PASS_THRESHOLD` | `0.7` | Score required to stop revising |
-| `COMEBLOG_MAX_DRAFT_ITERATIONS` | `3` | Maximum number of drafts |
 | `COMEBLOG_OUTPUT_DIR` | `../output` | Markdown output directory |
 
 Example `.env`:
@@ -163,8 +161,6 @@ Example `.env`:
 ```env
 COMEBLOG_OLLAMA_MODEL=qwen2.5:3b
 COMEBLOG_EVALUATOR_MODEL=qwen3:4b
-COMEBLOG_EVALUATOR_PASS_THRESHOLD=0.7
-COMEBLOG_MAX_DRAFT_ITERATIONS=3
 ```
 
 ## Tests

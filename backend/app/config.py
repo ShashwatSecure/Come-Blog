@@ -11,12 +11,6 @@ class Settings(BaseSettings):
     evaluator_model: str = "qwen3:4b"
     ollama_temperature: float = 0.4
 
-    min_sections: int = 2
-    max_sections: int = 6
-    max_worker_retries: int = 2
-    evaluator_pass_threshold: float = 0.7
-    max_draft_iterations: int = 3
-
     output_dir: str = "../output"
 
 
