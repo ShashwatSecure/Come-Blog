@@ -1,0 +1,1460 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Come-Blog API",
+    "description": "\nLocal-first blog generator. Submit a topic and the service researches it (Wikipedia, Wikimedia Commons, Tavily),\nplans and writes a cited article with a local Ollama model, runs deterministic quality gates, and publishes a static\nblog under `/site`.\n\n**Typical flow**\n\n1. `POST /preview` (optional): see the research that would be used. No model is called.\n2. `POST /blogs`: returns `202` and a job id.\n3. Poll `GET /jobs/{id}` until `status` is `done` or `failed`, then open the returned `url`.\n\n**Auth:** when the server sets `COMEBLOG_API_KEY`, send it in the `X-API-Key` header (use *Authorize* above).\nGeneration and mutation endpoints are rate limited per client IP and return `429` with `Retry-After`.\n",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Liveness probe",
+        "description": "Always unauthenticated and cheap; use it for container or load-balancer health checks.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ollama/check": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Check the local model server",
+        "description": "Confirms Ollama is running and the configured writer model responds.",
+        "operationId": "ollama_check_ollama_check_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate or queue limit hit; see Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ollama is not reachable or the model is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/preview": {
+      "post": {
+        "tags": [
+          "Generation"
+        ],
+        "summary": "Preview the research for a topic",
+        "description": "Runs only the research step (no language model), so it returns quickly. Results are cached for 15 minutes.",
+        "operationId": "preview_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopicRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate or queue limit hit; see Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Research providers failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/blogs": {
+      "post": {
+        "tags": [
+          "Generation"
+        ],
+        "summary": "Start generating a blog post",
+        "description": "Queues a generation job and returns immediately with `202`. Poll `GET /jobs/{id}`.\n\nGeneration takes minutes on a CPU-only machine. If the queue is full the API answers `429` with `Retry-After`.",
+        "operationId": "create_blog_blogs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBlogRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate or queue limit hit; see Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Generation"
+        ],
+        "summary": "Get generation job status",
+        "description": "Poll every few seconds. `status` ends as `done` (then `url` is set) or `failed` (then `error` is set).",
+        "operationId": "get_job_jobs__job_id__get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/posts": {
+      "get": {
+        "tags": [
+          "Posts"
+        ],
+        "summary": "List posts",
+        "description": "Newest first, with library-wide totals.",
+        "operationId": "list_posts_posts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/posts/{slug}": {
+      "get": {
+        "tags": [
+          "Posts"
+        ],
+        "summary": "Get a post as JSON",
+        "description": "The full article: sections, sources, images, quality report and every generation attempt.",
+        "operationId": "get_post_posts__slug__get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Article"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Posts"
+        ],
+        "summary": "Delete a post",
+        "description": "Removes the post folder and rebuilds the index, feed and sitemap. This cannot be undone.",
+        "operationId": "delete_post_posts__slug__delete",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate or queue limit hit; see Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/posts/{slug}/markdown": {
+      "get": {
+        "tags": [
+          "Posts"
+        ],
+        "summary": "Download a post as Markdown",
+        "operationId": "get_post_markdown_posts__slug__markdown_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/markdown": {}
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Article": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "subtitle": {
+            "type": "string",
+            "title": "Subtitle",
+            "default": ""
+          },
+          "excerpt": {
+            "type": "string",
+            "title": "Excerpt",
+            "default": ""
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/Section"
+            },
+            "type": "array",
+            "title": "Sections"
+          },
+          "takeaways": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Takeaways"
+          },
+          "closing": {
+            "type": "string",
+            "title": "Closing",
+            "default": ""
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ImageAsset"
+            },
+            "type": "array",
+            "title": "Images"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "published",
+              "needs_review"
+            ],
+            "title": "Status",
+            "default": "published"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/QualityReport"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptRecord"
+            },
+            "type": "array",
+            "title": "Attempts"
+          },
+          "audience": {
+            "type": "string",
+            "title": "Audience",
+            "default": "general readers"
+          },
+          "tone": {
+            "type": "string",
+            "title": "Tone",
+            "default": "conversational"
+          },
+          "length": {
+            "type": "string",
+            "title": "Length",
+            "default": "medium"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          },
+          "hue": {
+            "type": "integer",
+            "title": "Hue",
+            "default": 210
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "generation_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Seconds"
+          },
+          "word_count": {
+            "type": "integer",
+            "title": "Word Count",
+            "readOnly": true
+          },
+          "reading_minutes": {
+            "type": "integer",
+            "title": "Reading Minutes",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "topic",
+          "title",
+          "sections",
+          "word_count",
+          "reading_minutes"
+        ],
+        "title": "Article"
+      },
+      "AttemptRecord": {
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt"
+          },
+          "word_count": {
+            "type": "integer",
+            "title": "Word Count"
+          },
+          "checks_passed": {
+            "type": "integer",
+            "title": "Checks Passed"
+          },
+          "checks_total": {
+            "type": "integer",
+            "title": "Checks Total"
+          },
+          "llm_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Score"
+          },
+          "feedback": {
+            "type": "string",
+            "title": "Feedback",
+            "default": ""
+          },
+          "rewritten_sections": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rewritten Sections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "attempt",
+          "word_count",
+          "checks_passed",
+          "checks_total"
+        ],
+        "title": "AttemptRecord"
+      },
+      "CreateBlogRequest": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 3,
+            "title": "Topic",
+            "description": "What the post is about.",
+            "examples": [
+              "Why small teams need observability"
+            ]
+          },
+          "length": {
+            "type": "string",
+            "enum": [
+              "short",
+              "medium",
+              "long"
+            ],
+            "title": "Length",
+            "description": "short = 3 sections, medium = 4, long = 6.",
+            "default": "medium"
+          },
+          "tone": {
+            "type": "string",
+            "enum": [
+              "conversational",
+              "professional",
+              "playful",
+              "authoritative"
+            ],
+            "title": "Tone",
+            "default": "conversational"
+          },
+          "audience": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 3,
+            "title": "Audience",
+            "description": "Who the post is written for.",
+            "default": "general readers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic"
+        ],
+        "title": "CreateBlogRequest"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version"
+        ],
+        "title": "HealthResponse"
+      },
+      "ImageAsset": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "alt": {
+            "type": "string",
+            "title": "Alt"
+          },
+          "credit": {
+            "type": "string",
+            "title": "Credit",
+            "default": ""
+          },
+          "credit_url": {
+            "type": "string",
+            "title": "Credit Url",
+            "default": ""
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "default": ""
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "alt"
+        ],
+        "title": "ImageAsset"
+      },
+      "JobEvent": {
+        "properties": {
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "at",
+          "stage",
+          "message"
+        ],
+        "title": "JobEvent"
+      },
+      "JobResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Job id to poll at GET /jobs/{id}."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage",
+            "description": "Current pipeline stage: research, plan, write, assemble, review, publish or done.",
+            "default": ""
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          },
+          "progress": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "description": "Approximate completion, 0 to 1.",
+            "default": 0.0
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/JobEvent"
+            },
+            "type": "array",
+            "title": "Events",
+            "default": []
+          },
+          "elapsed_s": {
+            "type": "number",
+            "title": "Elapsed S",
+            "default": 0.0
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug",
+            "description": "Set once the post is saved."
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url",
+            "description": "Relative URL of the published post."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "topic"
+        ],
+        "title": "JobResponse"
+      },
+      "LibraryStats": {
+        "properties": {
+          "posts": {
+            "type": "integer",
+            "title": "Posts"
+          },
+          "words": {
+            "type": "integer",
+            "title": "Words"
+          },
+          "images": {
+            "type": "integer",
+            "title": "Images"
+          },
+          "sources": {
+            "type": "integer",
+            "title": "Sources"
+          },
+          "needs_review": {
+            "type": "integer",
+            "title": "Needs Review"
+          }
+        },
+        "type": "object",
+        "required": [
+          "posts",
+          "words",
+          "images",
+          "sources",
+          "needs_review"
+        ],
+        "title": "LibraryStats"
+      },
+      "MessageResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "MessageResponse"
+      },
+      "PostList": {
+        "properties": {
+          "stats": {
+            "$ref": "#/components/schemas/LibraryStats"
+          },
+          "posts": {
+            "items": {
+              "$ref": "#/components/schemas/PostSummary"
+            },
+            "type": "array",
+            "title": "Posts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stats",
+          "posts"
+        ],
+        "title": "PostList"
+      },
+      "PostSummary": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "excerpt": {
+            "type": "string",
+            "title": "Excerpt"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "published",
+              "needs_review"
+            ],
+            "title": "Status"
+          },
+          "words": {
+            "type": "integer",
+            "title": "Words"
+          },
+          "reading_minutes": {
+            "type": "integer",
+            "title": "Reading Minutes"
+          },
+          "sources": {
+            "type": "integer",
+            "title": "Sources"
+          },
+          "images": {
+            "type": "integer",
+            "title": "Images"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "title",
+          "excerpt",
+          "tags",
+          "status",
+          "words",
+          "reading_minutes",
+          "sources",
+          "images",
+          "created_at",
+          "url"
+        ],
+        "title": "PostSummary"
+      },
+      "PreviewResponse": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewSource"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "images": {
+            "type": "integer",
+            "title": "Images",
+            "description": "Number of candidate open-licensed images found."
+          },
+          "providers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Providers",
+            "description": "Research providers that returned data."
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic",
+          "summary",
+          "sources",
+          "images",
+          "providers"
+        ],
+        "title": "PreviewResponse"
+      },
+      "PreviewSource": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain",
+            "default": ""
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet",
+            "default": ""
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "url"
+        ],
+        "title": "PreviewSource"
+      },
+      "QualityCheck": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "passed": {
+            "type": "boolean",
+            "title": "Passed"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "blocking": {
+            "type": "boolean",
+            "title": "Blocking",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "passed"
+        ],
+        "title": "QualityCheck"
+      },
+      "QualityReport": {
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/QualityCheck"
+            },
+            "type": "array",
+            "title": "Checks"
+          },
+          "llm_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Score"
+          },
+          "llm_feedback": {
+            "type": "string",
+            "title": "Llm Feedback",
+            "default": ""
+          },
+          "llm_threshold": {
+            "type": "number",
+            "title": "Llm Threshold",
+            "default": 0.7
+          },
+          "llm_gate": {
+            "type": "boolean",
+            "title": "Llm Gate",
+            "default": false
+          },
+          "passed": {
+            "type": "boolean",
+            "title": "Passed",
+            "readOnly": true
+          },
+          "checks_passed": {
+            "type": "integer",
+            "title": "Checks Passed",
+            "readOnly": true
+          },
+          "checks_total": {
+            "type": "integer",
+            "title": "Checks Total",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "passed",
+          "checks_passed",
+          "checks_total"
+        ],
+        "title": "QualityReport"
+      },
+      "Section": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "heading": {
+            "type": "string",
+            "title": "Heading"
+          },
+          "body_md": {
+            "type": "string",
+            "title": "Body Md"
+          },
+          "word_count": {
+            "type": "integer",
+            "title": "Word Count",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "heading",
+          "body_md",
+          "word_count"
+        ],
+        "title": "Section"
+      },
+      "Source": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet",
+            "default": ""
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": ""
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "url",
+          "domain"
+        ],
+        "title": "Source"
+      },
+      "TopicRequest": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 3,
+            "title": "Topic",
+            "description": "What the post is about.",
+            "examples": [
+              "Why small teams need observability"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic"
+        ],
+        "title": "TopicRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "APIKeyHeader": {
+        "type": "apiKey",
+        "description": "Required only when COMEBLOG_API_KEY is set on the server.",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "System",
+      "description": "Liveness and dependency checks."
+    },
+    {
+      "name": "Generation",
+      "description": "Research preview and asynchronous blog generation jobs."
+    },
+    {
+      "name": "Posts",
+      "description": "Read, export and delete published posts."
+    }
+  ]
+}

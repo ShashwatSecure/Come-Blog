@@ -5,7 +5,8 @@ import threading
 import time
 from collections import defaultdict, deque
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Security
+from fastapi.security import APIKeyHeader
 
 from app.config import settings
 
@@ -47,12 +48,15 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def require_api_key(request: Request) -> None:
+# Declared as a security scheme so Swagger UI shows an "Authorize" button; auth itself is enforced below.
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False, description="Required only when COMEBLOG_API_KEY is set on the server.")
+
+
+def require_api_key(supplied: str | None = Security(api_key_scheme)) -> None:
     """No-op when COMEBLOG_API_KEY is empty (local use); constant-time compare otherwise."""
     if not settings.api_key:
         return
-    supplied = request.headers.get("x-api-key", "")
-    if not hmac.compare_digest(supplied.encode(), settings.api_key.encode()):
+    if not hmac.compare_digest((supplied or "").encode(), settings.api_key.encode()):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 

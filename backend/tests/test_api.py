@@ -24,6 +24,40 @@ def _seed(sources, **kw):
     return store.save_article(make_article(sources, **kw), [])
 
 
+def test_openapi_spec_documents_every_route(client):
+    spec = client.get("/openapi.json").json()
+    assert spec["openapi"].startswith("3.") and spec["info"]["title"] == "Come-Blog API"
+    assert client.get("/docs").status_code == 200 and client.get("/redoc").status_code == 200
+
+    expected = {("get", "/health"), ("get", "/ollama/check"), ("post", "/preview"), ("post", "/blogs"), ("get", "/jobs/{job_id}"),
+                ("get", "/posts"), ("get", "/posts/{slug}"), ("get", "/posts/{slug}/markdown"), ("delete", "/posts/{slug}")}
+    found = {(method, path) for path, ops in spec["paths"].items() for method in ops}
+    assert found == expected  # the site mount and the redirect stay out of the spec
+
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            assert op.get("tags") and op.get("summary"), f"{method} {path} lacks tags or summary"
+
+
+def test_openapi_declares_api_key_scheme_and_error_models(client):
+    spec = client.get("/openapi.json").json()
+    scheme = spec["components"]["securitySchemes"]["APIKeyHeader"]
+    assert scheme["in"] == "header" and scheme["name"] == "X-API-Key"
+    assert "security" not in spec["paths"]["/health"]["get"]  # liveness stays open
+    assert spec["paths"]["/blogs"]["post"]["security"]
+    assert spec["paths"]["/blogs"]["post"]["responses"]["202"]
+    assert {"401", "429", "422"} <= set(spec["paths"]["/blogs"]["post"]["responses"])
+    assert "404" in spec["paths"]["/posts/{slug}"]["get"]["responses"]
+    assert spec["components"]["schemas"]["CreateBlogRequest"]["properties"]["length"]["enum"] == ["short", "medium", "long"]
+
+
+def test_api_key_still_enforced_after_security_scheme(client, monkeypatch):
+    monkeypatch.setattr(settings, "api_key", "s3cret")
+    assert client.get("/posts").status_code == 401
+    assert client.get("/posts", headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.get("/posts", headers={"X-API-Key": "s3cret"}).status_code == 200
+
+
 def test_health_and_security_headers(client):
     r = client.get("/health")
     assert r.status_code == 200 and r.headers["x-content-type-options"] == "nosniff"
