@@ -38,7 +38,6 @@ ignore = ["B008"]
 "app/graph/nodes.py" = ["E501"]
 "app/security.py" = ["E501"]
 "tests/*" = ["E501"]
-
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
