@@ -17,6 +17,7 @@ import threading
 from langchain_ollama import ChatOllama
 
 from app.config import settings
+from app.logging_config import log_event
 
 _cache: dict[tuple[str, float, bool | None], ChatOllama] = {}
 _lock = threading.Lock()
@@ -38,5 +39,9 @@ def get_llm(
                     model=selected_model,
                     temperature=temp,
                     reasoning=reasoning,
+                    client_kwargs={"timeout": settings.ollama_timeout_s},
                 )
+                log_event(20, "llm_client_created", model=selected_model, temperature=temp, reasoning=reasoning)
+    else:
+        log_event(10, "llm_client_reused", model=selected_model, temperature=temp, reasoning=reasoning)
     return _cache[cache_key]

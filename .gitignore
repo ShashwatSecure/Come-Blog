@@ -7,5 +7,7 @@ venv/
 .ruff_cache/
 .env
 output/*.md
+output/site/
 !output/.gitkeep
+_snapshots/
 .vscode/
