@@ -1,207 +1,99 @@
 # Come-Blog
 
-A simple local blog writer powered by Ollama.
+A local-first blog generator. Give it a topic and it researches, plans, writes,
+reviews and publishes a real blog post: designed HTML page, cited sources with
+links, licensed images with credits, RSS, sitemap and a Markdown export. The
+models run on your machine through Ollama.
 
-Come-Blog lets you enter a topic, see a short preview, generate a first draft, review it with a second local model, and download the final blog as a Markdown file.
+## What you get per post
 
-## How It Works
+| File | Purpose |
+|---|---|
+| `index.html` | The article page: table of contents, reading progress, dark mode, print styles, SEO and JSON-LD |
+| `article.md` | Portable Markdown with citations as real links |
+| `article.json` | Full data: sections, sources, quality report, every writing pass |
+| `cover.svg` / `image-N.jpg` | Generated cover art and/or downloaded open-licensed photos with credit lines |
 
-```text
-Enter a topic
-    |
-Check Ollama
-    |
-Generate a 3-4 line preview
-    |
-Choose: generate the complete blog
-    |
-Writer creates a draft
-    |
-Evaluator scores the draft and gives feedback
-    |
-Writer revises it when the score is below 0.7
-    |
-Stop after a good score or after 3 drafts
-    |
-Download the final .md file
+The site lives in `output/site/` (`index.html` card grid, `feed.xml`, `sitemap.xml`)
+and is plain static files, so it can be hosted anywhere.
+
+## How it works
+
+```
+research -> plan -> write sections -> quality gates -> reviewer -> publish
+                         ^                                  |
+                         +---- rewrite failing sections <---+  (bounded)
 ```
 
-The two local models have separate jobs:
-
-- **Writer:** `qwen2.5:3b`
-- **Evaluator:** `qwen3:4b`
-
-The evaluator runs without reasoning mode because this keeps scoring faster on a CPU-based machine.
-
-## What You Need
-
-- Python 3.11 or newer
-- Ollama
-- The two local models:
-
-```bash
-ollama pull qwen2.5:3b
-ollama pull qwen3:4b
-```
-
-Make sure Ollama is running before starting the application. Its default address is `http://localhost:11434`.
+See [`docs/production/`](docs/production/) for the design notes and measured results.
 
 ## Setup
 
-### 1. Install backend dependencies
-
-From the project root:
+Requires Python 3.11+ and [Ollama](https://ollama.com).
 
 ```bash
+ollama pull qwen2.5:3b      # writer
+ollama pull qwen3:4b        # reviewer
+
 cd backend
 python -m venv .venv
-```
-
-Activate the environment:
-
-**Git Bash:**
-
-```bash
-source .venv/Scripts/activate
-```
-
-**PowerShell:**
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Install the backend and development dependencies:
-
-```bash
+.venv\Scripts\activate       # PowerShell; use source .venv/bin/activate on macOS/Linux
 pip install -e ".[dev]"
+cd ../ui && pip install -r requirements.txt
 ```
 
-### 2. Install UI dependencies
+Copy `.env.example` to `.env` and set at least:
 
-Open a second terminal:
+- `COMEBLOG_CONTACT` - a URL or email. **Required** for Wikipedia/Commons: Wikimedia
+  blocks clients that do not identify themselves.
+- `COMEBLOG_TAVILY_API_KEY` - optional, adds current web results.
+
+## Run
 
 ```bash
-cd ui
-pip install -r requirements.txt
+cd backend && uvicorn app.main:app --port 8000     # API + the published site
+cd ui && streamlit run streamlit_app.py            # create and manage posts
 ```
 
-## Run the App
+- Create posts in Streamlit (http://localhost:8501), pick length, tone and audience.
+- Read the blog at http://localhost:8000/site/index.html.
 
-Start the backend from the project root:
+Generation on small CPU-bound models takes minutes; the UI shows live progress.
 
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-Start the Streamlit interface in another terminal:
-
-```bash
-cd ui
-streamlit run streamlit_app.py
-```
-
-Open the URL shown by Streamlit, usually:
-
-```text
-http://localhost:8501
-```
-
-## Using the Interface
-
-1. Enter a topic.
-2. Click **Check Ollama**.
-3. Click **Get Topic Preview**.
-4. Click **Yes, generate the blog**.
-5. Review each draft, its evaluator score, and its feedback.
-6. Download the final Markdown file.
-
-Generated files are saved under `output/` with a topic-based name and timestamp.
-
-## API Endpoints
-
-The FastAPI backend exposes four small endpoints:
+## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | Confirm that the backend is running |
-| `GET` | `/ollama/check` | Confirm that the configured writer model responds |
-| `POST` | `/preview` | Generate a short topic preview |
-| `POST` | `/blogs` | Generate, evaluate, revise, and save a blog |
+| `GET` | `/health` | Liveness |
+| `GET` | `/ollama/check` | Model reachability |
+| `POST` | `/preview` | Research preview (sources, summary) |
+| `POST` | `/blogs` | Queue a job, returns `202` and a job id |
+| `GET` | `/jobs/{id}` | Status, stage, progress, events, resulting URL |
+| `GET` | `/posts`, `/posts/{slug}`, `/posts/{slug}/markdown` | Library |
+| `DELETE` | `/posts/{slug}` | Delete a post |
 
-Example request:
-
-```bash
-curl -X POST http://localhost:8000/preview \
-  -H "Content-Type: application/json" \
-  -d "{\"topic\":\"How to reduce email overload at work\"}"
-```
-
-The `/blogs` response contains:
-
-- the topic;
-- the final Markdown body;
-- the saved output path;
-- every draft attempt with its score and feedback.
+Set `COMEBLOG_API_KEY` to require an `X-API-Key` header on everything except `/health`.
 
 ## Configuration
 
-Configuration is loaded from `.env` using the `COMEBLOG_` prefix.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `COMEBLOG_OLLAMA_HOST` | `http://localhost:11434` | Ollama server address |
-| `COMEBLOG_OLLAMA_MODEL` | `qwen2.5:3b` | Writer model |
-| `COMEBLOG_EVALUATOR_MODEL` | `qwen3:4b` | Evaluation model |
-| `COMEBLOG_OLLAMA_TEMPERATURE` | `0.4` | Writer/evaluator temperature |
-| `COMEBLOG_OUTPUT_DIR` | `../output` | Markdown output directory |
-
-Example `.env`:
-
-```env
-COMEBLOG_OLLAMA_MODEL=qwen2.5:3b
-COMEBLOG_EVALUATOR_MODEL=qwen3:4b
-```
+All settings use the `COMEBLOG_` prefix; see `.env.example` for the full list
+(models, research providers, quality threshold, attempts, site branding, rate
+limits, CORS).
 
 ## Tests
 
-The unit tests use a fake LLM, so they do not need Ollama:
-
 ```bash
 cd backend
-python -m pytest -q
+python -m pytest -q          # no Ollama and no network needed
+python -m ruff check app tests
+python ../scripts/metrics.py # project metrics used in docs/production
 ```
 
-Current verified baseline: **10 tests passed**.
+Real end-to-end run (needs Ollama): `python ../scripts/live_run.py "your topic" short`
 
-## Project Structure
+## Limits
 
-```text
-Come-Blog/
-├── backend/
-│   ├── app/
-│   │   ├── main.py          # FastAPI routes
-│   │   ├── config.py        # Environment-based settings
-│   │   ├── runs.py          # Blog generation and review loop
-│   │   └── graph/llm.py     # Cached Ollama model factory
-│   ├── tests/               # Unit tests
-│   └── pyproject.toml
-├── ui/
-│   ├── streamlit_app.py     # Interactive interface
-│   └── requirements.txt
-├── docs/
-│   └── progress.md          # Project progression and evidence
-└── output/                  # Generated Markdown files
-```
-
-## Current Scope
-
-This is a local MVP. It intentionally has:
-
-- no login or multi-user support;
-- no database or run history;
-- synchronous blog generation;
-- no web search or external factual grounding;
-- no cloud deployment.
-
-The project is being built incrementally: first make the local path reliable, then add more sophisticated orchestration only when the simpler flow is stable.
+- Job state and the rate limiter are in memory (single process).
+- Small local models can drift off-topic; the reviewer loop contains this but
+  posts that miss the bar are marked **needs review** rather than hidden.
+- No Docker or CI definition yet.

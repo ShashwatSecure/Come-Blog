@@ -2,9 +2,11 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime
 from typing import Any
-
 
 _RESERVED = set(logging.LogRecord(None, 0, "", 0, "", (), None).__dict__)
 
@@ -14,7 +16,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         event: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -39,3 +41,21 @@ def configure_logging() -> None:
 
 
 logger = logging.getLogger("come_blog")
+
+_context: ContextVar[dict[str, Any] | None] = ContextVar("come_blog_log_context", default=None)
+
+
+def log_event(level: int, event: str, message: str | None = None, *, exc_info: bool = False, **fields: Any) -> None:
+    """Emit one structured event with the current request/run context attached."""
+    logger.log(level, message or event, extra={**(_context.get() or {}), **fields, "event": event}, exc_info=exc_info)
+
+
+@contextmanager
+def logging_context(**fields: Any) -> Generator[None, None, None]:
+    """Temporarily bind correlation fields to logs in the current execution context."""
+    current = _context.get() or {}
+    token = _context.set({**current,**{key: value for key, value in fields.items() if value is not None}})
+    try:
+        yield
+    finally:
+        _context.reset(token)

@@ -1,7 +1,7 @@
 [project]
 name = "come-blog-backend"
-version = "0.1.0"
-description = "Multi-agent blog writing backend (LangGraph + Ollama + FastAPI)"
+version = "1.0.0"
+description = "Local-first blog generator: research, write, review and publish a real illustrated blog (LangGraph + Ollama + FastAPI)"
 requires-python = ">=3.11"
 dependencies = [
     "langgraph>=0.2.60",
@@ -12,17 +12,32 @@ dependencies = [
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "python-slugify>=8.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
     "ruff>=0.7.0",
-    "httpx>=0.27.0",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.ruff]
-line-length = 100
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long lines here are HTML templates, LLM prompts and fixtures; wrapping them hurts readability.
+"app/render.py" = ["E501"]
+"app/graph/nodes.py" = ["E501"]
+"app/security.py" = ["E501"]
+"tests/*" = ["E501"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

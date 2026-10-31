@@ -146,7 +146,8 @@ Single page:
 - Docker/containerization and actual cloud deployment
 - Persistent DB (Postgres) for run history — in-memory for now
 - Auth/multi-tenancy
-- Web search / RAG for factual grounding
+- RAG/vector storage and citation management (optional Tavily web search
+  grounding is implemented in [`04-web-search.md`](04-web-search.md))
 - Streaming token-by-token UI
 - Horizontal scaling / task queue (Celery/RQ)
 - CI/CD pipeline
