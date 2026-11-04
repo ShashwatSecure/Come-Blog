@@ -83,6 +83,21 @@ cd ui && streamlit run streamlit_app.py            # create and manage posts
 
 Generation on small CPU-bound models takes minutes; the UI shows live progress.
 
+## Docker
+
+```bash
+cp .env.example .env            # set COMEBLOG_CONTACT at least
+docker compose up --build
+# first run only: pull the models into the Ollama volume
+docker compose exec ollama ollama pull qwen2.5:3b
+docker compose exec ollama ollama pull qwen3:4b
+```
+
+Three services start: `ollama` (models persisted in the `ollama` volume), `api` on
+http://localhost:8000 and `ui` on http://localhost:8501. Generated posts live in the `output`
+volume. Both app images are multi-stage `python:3.12-slim` builds that run as a non-root user.
+Ollama runs on CPU by default; GPU passthrough needs extra compose settings for your platform.
+
 ## API
 
 | Method | Path | Purpose |
