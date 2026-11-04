@@ -129,9 +129,28 @@ python ../scripts/metrics.py # project metrics used in docs/production
 
 Real end-to-end run (needs Ollama): `python ../scripts/live_run.py "your topic" short`
 
-## Limits
+## Known limitations and next steps
 
-- Job state and the rate limiter are in memory (single process).
-- Small local models can drift off-topic; the reviewer loop contains this but
-  posts that miss the bar are marked **needs review** rather than hidden.
-- CI runs lint and the offline test suite on every push and pull request (`.github/workflows/ci.yml`).
+**Limitations**
+
+- **Job state is in memory.** Queued and running jobs, their progress and events live in the API
+  process. Restarting the server loses them (published posts survive, since they are files).
+  A job that was running at the time is not resumed.
+- **Rate limiting is in memory and per process.** Counters reset on restart and are not shared,
+  so running several API workers or replicas multiplies the effective limit. Keep a single
+  process, or enforce limits at a reverse proxy.
+- **Single node.** Posts are files in `output/`; there is no shared storage or database, so the
+  API cannot be scaled horizontally as is.
+- **Small-model quality.** The default 3B/4B models are chosen to run on a laptop CPU. They can
+  drift off-topic, repeat themselves, or cite sources loosely. The quality gates and reviewer loop
+  reduce this and are bounded, but they do not eliminate it: posts that miss the bar are marked
+  **needs review** rather than hidden. Read before publishing. Larger models via
+  `COMEBLOG_OLLAMA_MODEL` help but are slower.
+- **Slow generation.** Expect minutes per post on CPU.
+
+**Next steps** (not implemented)
+
+- Persist jobs in SQLite or Postgres so they survive restarts and can be resumed.
+- Move rate limiting to a shared store (or the proxy) before running multiple workers.
+- Add coverage reporting to CI (`pytest-cov`) and a container build job.
+- Evaluate larger or hosted models for the writer step.
