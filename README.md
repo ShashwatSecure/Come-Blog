@@ -27,6 +27,29 @@ research -> plan -> write sections -> quality gates -> reviewer -> publish
 
 See [`docs/production/`](docs/production/) for the design notes and measured results.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    UI["Streamlit UI<br/>:8501"] -->|"HTTP + X-API-Key"| API["FastAPI<br/>:8000"]
+    API -->|"POST /blogs -> 202"| Q["In-memory job queue<br/>bounded worker pool"]
+    Q --> P
+    subgraph P["LangGraph pipeline"]
+        direction LR
+        R[research] --> PL[plan] --> W[write sections] --> QG[quality gates] --> RV[reviewer] --> PU[publish]
+        RV -. "rewrite weakest section (bounded)" .-> W
+    end
+    R <-->|"search, images"| EXT["Wikipedia, Commons, Tavily (optional)"]
+    PL & W & RV <-->|"prompts"| OL["Ollama<br/>writer + reviewer models"]
+    PU --> OUT[("output/site/<br/>posts/slug/index.html, article.md, article.json, images<br/>index.html, feed.xml, sitemap.xml")]
+    API -->|"GET /site/*"| OUT
+    UI -.->|"GET /jobs/id (poll)"| API
+```
+
+The API accepts a job and returns immediately; a worker runs the pipeline and the UI polls
+for progress. Everything the pipeline produces is plain files under `output/`, which the API
+also serves at `/site/`.
+
 ## Setup
 
 Requires Python 3.11+ and [Ollama](https://ollama.com).
@@ -96,4 +119,4 @@ Real end-to-end run (needs Ollama): `python ../scripts/live_run.py "your topic" 
 - Job state and the rate limiter are in memory (single process).
 - Small local models can drift off-topic; the reviewer loop contains this but
   posts that miss the bar are marked **needs review** rather than hidden.
-- No Docker or CI definition yet.
+- CI runs lint and the offline test suite on every push and pull request (`.github/workflows/ci.yml`).
