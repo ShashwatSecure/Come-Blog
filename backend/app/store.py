@@ -1,6 +1,7 @@
 """Filesystem store: one folder per post under output/site/posts, plus a rebuilt index/feed."""
 
 import json
+import logging
 import shutil
 import threading
 from pathlib import Path
@@ -42,7 +43,7 @@ def save_article(article: Article, candidate_images: list[ImageAsset]) -> Articl
             shutil.rmtree(folder, ignore_errors=True)  # never leave a half-written post
             raise
         rebuild_site()
-    log_event(20, "article_saved", slug=slug, words=article.word_count, images=len(article.images), status=article.status)
+    log_event(logging.INFO, "article_saved", slug=slug, words=article.word_count, images=len(article.images), status=article.status)
     return article
 
 
@@ -60,7 +61,7 @@ def list_articles() -> list[Article]:
             try:
                 articles.append(Article.model_validate_json(path.read_text(encoding="utf-8")))
             except Exception:  # noqa: BLE001 - skip a corrupt post, keep the site up
-                log_event(30, "article_unreadable", path=path.parent.name)
+                log_event(logging.WARNING, "article_unreadable", path=path.parent.name)
     return sorted(articles, key=lambda a: a.created_at, reverse=True)
 
 
@@ -71,7 +72,7 @@ def delete_article(slug: str) -> bool:
     with _lock:
         shutil.rmtree(folder)
         rebuild_site()
-    log_event(20, "article_deleted", slug=slug)
+    log_event(logging.INFO, "article_deleted", slug=slug)
     return True
 
 

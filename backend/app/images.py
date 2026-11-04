@@ -1,5 +1,6 @@
 """Safe image fetching for post folders. Only allow-listed hosts, size-capped, sniffed."""
 
+import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -23,7 +24,7 @@ def _extension(data: bytes) -> str | None:
 def fetch_image(url: str) -> bytes | None:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
-        log_event(30, "image_rejected", reason="host_not_allowed", host=parsed.hostname)
+        log_event(logging.WARNING, "image_rejected", reason="host_not_allowed", host=parsed.hostname)
         return None
     with httpx.Client(timeout=settings.http_timeout_s * 2, headers={"User-Agent": settings.user_agent}) as client:
         with client.stream("GET", url) as response:
@@ -32,7 +33,7 @@ def fetch_image(url: str) -> bytes | None:
             for chunk in response.iter_bytes():
                 data.extend(chunk)
                 if len(data) > settings.max_image_bytes:
-                    log_event(30, "image_rejected", reason="too_large")
+                    log_event(logging.WARNING, "image_rejected", reason="too_large")
                     return None
     return bytes(data)
 
@@ -49,7 +50,7 @@ def download_images(images: list[ImageAsset], folder: Path, limit: int = 3) -> l
         try:
             data = fetch_image(image.url)
         except Exception as exc:  # noqa: BLE001 - a missing image must not fail the article
-            log_event(30, "image_download_failed", error=type(exc).__name__)
+            log_event(logging.WARNING, "image_download_failed", error=type(exc).__name__)
             continue
         extension = _extension(data) if data else None
         if not data or not extension:
@@ -57,5 +58,5 @@ def download_images(images: list[ImageAsset], folder: Path, limit: int = 3) -> l
         filename = f"image-{len(saved) + 1}{extension}"
         (folder / filename).write_bytes(data)
         saved.append(image.model_copy(update={"filename": filename}))
-    log_event(20, "images_downloaded", requested=len(images), saved=len(saved))
+    log_event(logging.INFO, "images_downloaded", requested=len(images), saved=len(saved))
     return saved
