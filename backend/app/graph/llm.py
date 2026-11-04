@@ -12,6 +12,7 @@ create_default_context() calls raising FileNotFoundError on Windows/Python
 both problems since all workers share the same handful of temperature values.
 """
 
+import logging
 import threading
 
 from langchain_ollama import ChatOllama
@@ -41,7 +42,7 @@ def get_llm(
                     reasoning=reasoning,
                     client_kwargs={"timeout": settings.ollama_timeout_s},
                 )
-                log_event(20, "llm_client_created", model=selected_model, temperature=temp, reasoning=reasoning)
+                log_event(logging.INFO, "llm_client_created", model=selected_model, temperature=temp, reasoning=reasoning)
     else:
-        log_event(10, "llm_client_reused", model=selected_model, temperature=temp, reasoning=reasoning)
+        log_event(logging.DEBUG, "llm_client_reused", model=selected_model, temperature=temp, reasoning=reasoning)
     return _cache[cache_key]

@@ -1,3 +1,4 @@
+import logging
 import time
 from functools import lru_cache
 
@@ -22,13 +23,16 @@ def _logged_node(name, node):
         configurable = (config or {}).get("configurable", {})
         started = time.perf_counter()
         with logging_context(node=name, run_id=configurable.get("run_id"), request_id=configurable.get("request_id")):
-            log_event(20, "node_started")
+            log_event(logging.INFO, "node_started")
             try:
                 result = node(state, config)
             except Exception:
-                log_event(40, "node_failed", duration_ms=round((time.perf_counter() - started) * 1000, 2), exc_info=True)
+                log_event(logging.ERROR, "node_failed", duration_ms=round((time.perf_counter() - started) * 1000, 2), exc_info=True)
                 raise
-            log_event(20, "node_completed", duration_ms=round((time.perf_counter() - started) * 1000, 2), result_fields=list(result))
+            log_event(
+                logging.INFO, "node_completed",
+                duration_ms=round((time.perf_counter() - started) * 1000, 2), result_fields=list(result),
+            )
             return result
 
     return run

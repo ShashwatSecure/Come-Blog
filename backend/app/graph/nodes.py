@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -92,7 +93,7 @@ def plan_node(state: BlogState, config: dict | None = None) -> dict:
             raise ValueError("too few sections")
         plan = plan.model_copy(update={"sections": plan.sections[: count + 1]})
     except Exception as exc:  # noqa: BLE001 - weak local models sometimes break the schema
-        log_event(30, "plan_fallback", error=type(exc).__name__)
+        log_event(logging.WARNING, "plan_fallback", error=type(exc).__name__)
         plan = _fallback_plan(state)
     excerpt = plan.excerpt.strip()
     if len(excerpt) < 40:  # small models sometimes leave this empty; never publish a blank meta description
@@ -103,7 +104,7 @@ def plan_node(state: BlogState, config: dict | None = None) -> dict:
         "excerpt": clamp_text(excerpt, 200),
         "tags": [t for t in dict.fromkeys(normalize_tag(t) for t in plan.tags) if t][:4],
     })
-    log_event(20, "plan_ready", sections=len(plan.sections))
+    log_event(logging.INFO, "plan_ready", sections=len(plan.sections))
     return {"plan": plan}
 
 
@@ -185,7 +186,7 @@ def _wrapup(state: BlogState) -> tuple[list[str], str]:
             raise ValueError("takeaways unusable after cleaning")
         return takeaways, clean_llm_markdown(result.closing)
     except Exception as exc:  # noqa: BLE001
-        log_event(30, "wrapup_fallback", error=type(exc).__name__)
+        log_event(logging.WARNING, "wrapup_fallback", error=type(exc).__name__)
         points = [p for s in state.plan.sections for p in s.key_points][:4] or [s.heading for s in state.plan.sections][:4]
         return [clamp_text(p, 160) for p in points], f"That is the essence of {state.topic.rstrip('?.').lower()}. Pick one idea above and try it today."
 
@@ -210,7 +211,7 @@ def assemble_node(state: BlogState, config: dict | None = None) -> dict:
         hue=_hue(state.topic),
     )
     report = quality.evaluate(article, state.plan.sections, state.length)
-    log_event(20, "quality_checked", passed=report.passed, checks=f"{report.checks_passed}/{report.checks_total}")
+    log_event(logging.INFO, "quality_checked", passed=report.passed, checks=f"{report.checks_passed}/{report.checks_total}")
     return {"article": article, "quality": report, "takeaways": takeaways, "closing": closing}
 
 
@@ -241,10 +242,10 @@ def review_node(state: BlogState, config: dict | None = None) -> dict:
         report = state.quality.model_copy(update={
             "llm_score": review.score, "llm_feedback": review.feedback, "llm_threshold": settings.pass_threshold,
         })
-        log_event(20, "llm_review_done", score=review.score)
+        log_event(logging.INFO, "llm_review_done", score=review.score)
         return {"quality": report, "rewrite": [review.weakest_section] if review.weakest_section else []}
     except Exception as exc:  # noqa: BLE001 - reviewer outage must not block publishing
-        log_event(30, "llm_review_skipped", error=type(exc).__name__)
+        log_event(logging.WARNING, "llm_review_skipped", error=type(exc).__name__)
         return {}
 
 
@@ -254,7 +255,7 @@ def route_after_review(state: BlogState) -> str:
         route = "publish"
     else:
         route = "retry"
-    log_event(20, "route_selected", route=route, attempt=state.attempt, passed=state.quality.passed)
+    log_event(logging.INFO, "route_selected", route=route, attempt=state.attempt, passed=state.quality.passed)
     return route
 
 

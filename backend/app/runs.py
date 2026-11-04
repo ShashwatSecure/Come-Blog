@@ -1,5 +1,6 @@
 """Background job runner: bounded queue, progress events, per-job status for polling."""
 
+import logging
 import threading
 import time
 import uuid
@@ -59,7 +60,7 @@ class JobManager:
             self._jobs[job.id] = job
             self._trim()
         self._pool.submit(self._run, job.id, BlogState(topic=topic, length=length, tone=tone, audience=audience), request_id)
-        log_event(20, "job_queued", job_id=job.id)
+        log_event(logging.INFO, "job_queued", job_id=job.id)
         return job
 
     def _trim(self, keep: int = 200) -> None:
@@ -84,7 +85,7 @@ class JobManager:
             job.status, job.started_at = "running", time.time()
         started = time.perf_counter()
         with logging_context(run_id=job_id, request_id=request_id):
-            log_event(20, "graph_started", topic_length=len(state.topic))
+            log_event(logging.INFO, "graph_started", topic_length=len(state.topic))
             try:
                 result = build_graph().invoke(
                     state.model_copy(update={"started_at": time.time()}),
@@ -96,9 +97,9 @@ class JobManager:
                 article: Article = result["article"]
                 with self._lock:
                     job.status, job.slug, job.finished_at = "done", article.slug, time.time()
-                log_event(20, "graph_completed", duration_ms=round((time.perf_counter() - started) * 1000, 1), slug=article.slug)
+                log_event(logging.INFO, "graph_completed", duration_ms=round((time.perf_counter() - started) * 1000, 1), slug=article.slug)
             except Exception as exc:  # noqa: BLE001 - surface any failure to the polling client
-                log_event(40, "graph_failed", exc_info=True)
+                log_event(logging.ERROR, "graph_failed", exc_info=True)
                 with self._lock:
                     job.status, job.finished_at = "failed", time.time()
                     job.error = f"{type(exc).__name__}: {str(exc)[:240]}"

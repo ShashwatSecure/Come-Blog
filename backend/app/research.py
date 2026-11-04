@@ -5,6 +5,7 @@ blocks generation. All HTTP goes through `_get_json` / `_post_json` so tests can
 """
 
 import html
+import logging
 import re
 import threading
 import time
@@ -170,7 +171,7 @@ def _safely(label: str, fn, default):
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001 - research must never block generation
-        log_event(30, "research_provider_failed", provider=label, error=type(exc).__name__)
+        log_event(logging.WARNING, "research_provider_failed", provider=label, error=type(exc).__name__)
         return default
 
 
@@ -181,7 +182,7 @@ def research(topic: str) -> ResearchBundle:
     with _cache_lock:
         hit = _cache.get(key)
         if hit and now - hit[0] < settings.research_cache_ttl_s:
-            log_event(20, "research_cache_hit")
+            log_event(logging.INFO, "research_cache_hit")
             return hit[1].model_copy(deep=True)
 
     started = time.perf_counter()
@@ -211,7 +212,7 @@ def research(topic: str) -> ResearchBundle:
         images=[by_url[u] for u in images][:6],
         providers=sorted({s.provider for s in merged}),
     )
-    log_event(20, "research_completed", sources=len(merged), images=len(bundle.images),
+    log_event(logging.INFO, "research_completed", sources=len(merged), images=len(bundle.images),
               providers=bundle.providers, duration_ms=round((time.perf_counter() - started) * 1000, 1))
     with _cache_lock:
         _cache[key] = (now, bundle.model_copy(deep=True))
