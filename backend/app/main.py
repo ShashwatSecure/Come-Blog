@@ -3,13 +3,13 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from app import runs, store
 from app.config import settings
@@ -38,6 +38,10 @@ blog under `/site`.
 1. `POST /preview` (optional): see the research that would be used. No model is called.
 2. `POST /blogs`: returns `202` and a job id.
 3. Poll `GET /jobs/{id}` until `status` is `done` or `failed`, then open the returned `url`.
+
+**Human in the loop:** create the job with `"interactive": true` and it pauses (`status: awaiting_input`) after planning
+and after every evaluation. `pending` shows the outline, or the draft with the evaluator's score, feedback points and
+suggested sections. Answer with `POST /jobs/{id}/feedback` to approve, edit or add feedback, then choose rewrite or publish.
 
 **Auth:** when the server sets `COMEBLOG_API_KEY`, send it in the `X-API-Key` header (use *Authorize* above).
 Generation and mutation endpoints are rate limited per client IP and return `429` with `Retry-After`.
@@ -94,16 +98,64 @@ class CreateBlogRequest(TopicRequest):
     length: Length = Field("medium", description="short = 3 sections, medium = 4, long = 6.")
     tone: Tone = "conversational"
     audience: str = Field("general readers", min_length=3, max_length=80, description="Who the post is written for.")
+    interactive: bool = Field(
+        False,
+        description="Human in the loop: pause after planning and after every evaluation so you can steer the run "
+                    "via POST /jobs/{id}/feedback. When false the pipeline runs unattended.",
+    )
+
+
+FeedbackPoint = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
+
+
+class PlanSectionEdit(BaseModel):
+    heading: str = Field(min_length=2, max_length=120)
+    brief: str = Field("", max_length=600)
+    key_points: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]] = Field(
+        default_factory=list, max_length=6)
+
+
+class PlanEdit(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    subtitle: str = Field("", max_length=300)
+    excerpt: str = Field("", max_length=300)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+    sections: list[PlanSectionEdit] = Field(min_length=1, max_length=8)
+
+    @field_validator("sections")
+    @classmethod
+    def _unique_headings(cls, sections: list[PlanSectionEdit]) -> list[PlanSectionEdit]:
+        names = [s.heading.strip().lower() for s in sections]
+        if len(set(names)) != len(names):
+            raise ValueError("section headings must be unique")
+        return sections
+
+
+class FeedbackRequest(BaseModel):
+    action: Literal["continue", "rewrite", "publish"] = Field(
+        description="At the plan step: continue. At the review step: rewrite (another writing pass) or publish.")
+    plan: PlanEdit | None = Field(None, description="Plan step only: your edited outline. Omit to approve it as proposed.")
+    feedback_points: list[FeedbackPoint] | None = Field(
+        None, max_length=15,
+        description="Review step: the guidance for the next pass. Start from `suggested_points`, then keep, edit, drop or add. "
+                    "Omit to use the evaluator's suggestions unchanged.",
+    )
+    sections: list[str] = Field(
+        default_factory=list, max_length=8,
+        description="Review step: headings to rewrite. Empty uses `suggested_sections`.")
 
 
 class JobResponse(BaseModel):
     id: str = Field(description="Job id to poll at GET /jobs/{id}.")
-    status: Literal["queued", "running", "done", "failed"]
+    status: Literal["queued", "running", "awaiting_input", "done", "failed"]
     topic: str
+    interactive: bool = False
     stage: str = Field("", description="Current pipeline stage: research, plan, write, assemble, review, publish or done.")
     message: str = ""
     progress: float = Field(0.0, ge=0, le=1, description="Approximate completion, 0 to 1.")
     events: list[runs.JobEvent] = []
+    pending: runs.PendingInput | None = Field(
+        None, description="Set while status is awaiting_input: what the run is asking you. Answer with POST /jobs/{id}/feedback.")
     elapsed_s: float = 0.0
     slug: str | None = Field(None, description="Set once the post is saved.")
     url: str | None = Field(None, description="Relative URL of the published post.")
@@ -182,8 +234,8 @@ def _job_response(job: runs.Job) -> JobResponse:
     progress = 1.0 if job.status == "done" else ((_STAGES.index(stage) + 0.5) / len(_STAGES) if stage in _STAGES else 0.02)
     end = job.finished_at or time.time()
     return JobResponse(
-        id=job.id, status=job.status, topic=job.topic, stage=stage, message=last.message if last else "",
-        progress=round(min(progress, 0.99) if job.status != "done" else 1.0, 2), events=job.events,
+        id=job.id, status=job.status, topic=job.topic, interactive=job.interactive, stage=stage, message=last.message if last else "",
+        progress=round(min(progress, 0.99) if job.status != "done" else 1.0, 2), events=job.events, pending=job.pending,
         elapsed_s=round(end - (job.started_at or job.created_at), 1), slug=job.slug,
         url=f"/site/posts/{job.slug}/index.html" if job.slug else None, error=job.error,
     )
@@ -232,7 +284,8 @@ def create_blog(req: CreateBlogRequest, request: Request) -> JobResponse:
     Generation takes minutes on a CPU-only machine. If the queue is full the API answers `429` with `Retry-After`.
     """
     try:
-        job = runs.get_manager().submit(req.topic.strip(), req.length, req.tone, req.audience.strip(), request.state.request_id)
+        job = runs.get_manager().submit(
+            req.topic.strip(), req.length, req.tone, req.audience.strip(), request.state.request_id, interactive=req.interactive)
     except runs.QueueFull:
         raise HTTPException(status_code=429, detail="Generation queue is full; try again shortly", headers={"Retry-After": "30"}) from None
     return _job_response(job)
@@ -247,6 +300,31 @@ def get_job(job_id: str) -> JobResponse:
     job = runs.get_manager().get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job")
+    return _job_response(job)
+
+
+@app.post(
+    "/jobs/{job_id}/feedback", status_code=202, tags=["Generation"], summary="Answer a paused (interactive) job",
+    dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    responses={**_AUTH, **_NOT_FOUND, **_LIMITED,
+               409: {"model": ErrorResponse, "description": "The job is not waiting for input."},
+               422: {"model": ErrorResponse, "description": "The answer does not fit the step the job is paused at."}},
+)
+def submit_feedback(job_id: str, req: FeedbackRequest, request: Request) -> JobResponse:
+    """Resume a job whose `status` is `awaiting_input`. Look at `pending.kind`:
+
+    * `plan`: send `continue`, optionally with an edited `plan`.
+    * `review`: read the draft and the evaluator's `suggested_points`, then send `rewrite` with your own
+      `feedback_points` (keep, edit, drop or add) and `sections`, or `publish` to accept the draft.
+    """
+    try:
+        job = runs.get_manager().resume(job_id, req.model_dump(exclude_none=True), request.state.request_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown job") from None
+    except runs.NotAwaitingInput:
+        raise HTTPException(status_code=409, detail="Job is not waiting for input") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return _job_response(job)
 
 

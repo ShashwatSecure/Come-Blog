@@ -30,6 +30,7 @@ def test_openapi_spec_documents_every_route(client):
     assert client.get("/docs").status_code == 200 and client.get("/redoc").status_code == 200
 
     expected = {("get", "/health"), ("get", "/ollama/check"), ("post", "/preview"), ("post", "/blogs"), ("get", "/jobs/{job_id}"),
+                ("post", "/jobs/{job_id}/feedback"),
                 ("get", "/posts"), ("get", "/posts/{slug}"), ("get", "/posts/{slug}/markdown"), ("delete", "/posts/{slug}")}
     found = {(method, path) for path, ops in spec["paths"].items() for method in ops}
     assert found == expected  # the site mount and the redirect stay out of the spec
@@ -158,3 +159,51 @@ def test_queue_full_returns_429(client, monkeypatch):
     monkeypatch.setattr(runs, "build_graph", lambda: Slow())
     assert client.post("/blogs", json={"topic": "first topic"}).status_code == 202
     assert client.post("/blogs", json={"topic": "second topic"}).status_code == 429
+
+
+def _wait(client, job_id, statuses):
+    for _ in range(200):
+        job = client.get(f"/jobs/{job_id}").json()
+        if job["status"] in statuses:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job stuck in {job['status']}")
+
+
+def test_interactive_job_pauses_and_resumes_with_feedback(client, monkeypatch, bundle):
+    from app.graph import nodes
+    from tests.test_nodes import FakeLLM
+
+    llm = FakeLLM()
+    monkeypatch.setattr(nodes, "get_llm", lambda *a, **k: llm)
+    monkeypatch.setattr(nodes.research, "research", lambda topic: bundle)
+    monkeypatch.setattr(settings, "max_attempts", 2)
+
+    job_id = client.post("/blogs", json={"topic": "sleep hygiene", "interactive": True}).json()["id"]
+    job = _wait(client, job_id, {"awaiting_input", "failed"})
+    assert job["status"] == "awaiting_input" and job["pending"]["kind"] == "plan" and job["interactive"]
+
+    assert client.post(f"/jobs/{job_id}/feedback", json={"action": "publish"}).status_code == 422  # wrong step
+    dup = {"title": "Edited", "sections": [{"heading": "Same"}, {"heading": "same"}]}
+    assert client.post(f"/jobs/{job_id}/feedback", json={"action": "continue", "plan": dup}).status_code == 422
+    assert client.post(f"/jobs/{job_id}/feedback", json={"action": "continue"}).status_code == 202
+
+    job = _wait(client, job_id, {"awaiting_input", "failed"})
+    pending = job["pending"]["payload"]
+    assert job["pending"]["kind"] == "review" and pending["sections"] and "suggested_points" in pending
+    r = client.post(f"/jobs/{job_id}/feedback", json={
+        "action": "rewrite", "feedback_points": ["Use a real-life example"], "sections": [pending["sections"][0]["heading"]]})
+    assert r.status_code == 202 and r.json()["status"] == "running"
+    assert client.post(f"/jobs/{job_id}/feedback", json={"action": "publish"}).status_code in (202, 409)
+
+    job = _wait(client, job_id, {"awaiting_input", "done", "failed"})
+    if job["status"] == "awaiting_input":
+        assert job["pending"]["payload"]["can_rewrite"] is False
+        assert client.post(f"/jobs/{job_id}/feedback", json={"action": "rewrite"}).status_code == 422
+        assert client.post(f"/jobs/{job_id}/feedback", json={"action": "publish"}).status_code == 202
+        job = _wait(client, job_id, {"done", "failed"})
+    assert job["status"] == "done", job.get("error")
+    post = client.get(f"/posts/{job['slug']}").json()
+    assert post["attempts"][0]["human_feedback"] == ["Use a real-life example"]
+    assert client.post(f"/jobs/{job_id}/feedback", json={"action": "publish"}).status_code == 409
+    assert client.post("/jobs/nope/feedback", json={"action": "publish"}).status_code == 404

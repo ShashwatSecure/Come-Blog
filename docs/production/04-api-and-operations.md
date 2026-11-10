@@ -10,12 +10,27 @@ Baseline: `POST /blogs` blocked for up to 180 s and returned everything at once.
 | `GET /ollama/check` | model reachability |
 | `POST /preview` | research preview (sources, summary, image count); no model needed |
 | `POST /blogs` -> `202 {id}` | queue a generation job |
-| `GET /jobs/{id}` | status, stage, progress 0-1, last events, elapsed, final URL, error |
+| `GET /jobs/{id}` | status, stage, progress 0-1, last events, elapsed, final URL, error; `pending` while `awaiting_input` |
+| `POST /jobs/{id}/feedback` -> `202` | answer a paused interactive job (approve/edit outline; rewrite with your feedback or publish) |
 | `GET /posts`, `GET /posts/{slug}`, `GET /posts/{slug}/markdown` | library |
 | `DELETE /posts/{slug}` | remove a post and rebuild the site |
 | `/site/...` | the published blog (static files) |
 
-`POST /blogs` accepts `length` (short/medium/long), `tone`, `audience`.
+`POST /blogs` accepts `length` (short/medium/long), `tone`, `audience` and `interactive`.
+
+## Human in the loop
+
+With `interactive: true` the graph pauses (LangGraph `interrupt`, state kept in an in-memory checkpointer keyed
+by job id) and the job reports `status: awaiting_input` with a `pending` object:
+
+| `pending.kind` | `pending.payload` | Valid answers |
+|---|---|---|
+| `plan` | the proposed outline | `{"action": "continue"}`, optionally with an edited `plan` |
+| `review` | draft sections, score, failing checks, `suggested_points`, `suggested_sections`, `attempt`, `can_rewrite` | `{"action": "rewrite", "feedback_points": [...], "sections": [...]}` or `{"action": "publish"}` |
+
+Your `feedback_points` replace the reviewer's text in the next rewrite prompt and are stored on the post's
+attempt history (`attempts[].human_feedback`). A wrong action for the step returns `422`; answering a job that
+is not paused returns `409`. Paused jobs count toward `COMEBLOG_MAX_QUEUED_JOBS` and are lost on restart.
 
 ## Job manager
 

@@ -31,6 +31,10 @@ rewrite list. Only those sections are regenerated (with the reviewer feedback in
 the prompt); passing sections are kept. Baseline behaviour was to regenerate the
 entire draft.
 
+In interactive jobs a person sits between the reviewer and the rewrite: the reviewer's feedback and the
+failing checks are offered as editable points, and the person decides which points and sections go into
+the next pass, or publishes instead.
+
 ## Honest publishing
 
 After `COMEBLOG_MAX_ATTEMPTS` the pipeline stops. If the bar is still not met the

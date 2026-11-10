@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Come-Blog API",
-    "description": "\nLocal-first blog generator. Submit a topic and the service researches it (Wikipedia, Wikimedia Commons, Tavily),\nplans and writes a cited article with a local Ollama model, runs deterministic quality gates, and publishes a static\nblog under `/site`.\n\n**Typical flow**\n\n1. `POST /preview` (optional): see the research that would be used. No model is called.\n2. `POST /blogs`: returns `202` and a job id.\n3. Poll `GET /jobs/{id}` until `status` is `done` or `failed`, then open the returned `url`.\n\n**Auth:** when the server sets `COMEBLOG_API_KEY`, send it in the `X-API-Key` header (use *Authorize* above).\nGeneration and mutation endpoints are rate limited per client IP and return `429` with `Retry-After`.\n",
+    "description": "\nLocal-first blog generator. Submit a topic and the service researches it (Wikipedia, Wikimedia Commons, Tavily),\nplans and writes a cited article with a local Ollama model, runs deterministic quality gates, and publishes a static\nblog under `/site`.\n\n**Typical flow**\n\n1. `POST /preview` (optional): see the research that would be used. No model is called.\n2. `POST /blogs`: returns `202` and a job id.\n3. Poll `GET /jobs/{id}` until `status` is `done` or `failed`, then open the returned `url`.\n\n**Human in the loop:** create the job with `\"interactive\": true` and it pauses (`status: awaiting_input`) after planning\nand after every evaluation. `pending` shows the outline, or the draft with the evaluator's score, feedback points and\nsuggested sections. Answer with `POST /jobs/{id}/feedback` to approve, edit or add feedback, then choose rewrite or publish.\n\n**Auth:** when the server sets `COMEBLOG_API_KEY`, send it in the `X-API-Key` header (use *Authorize* above).\nGeneration and mutation endpoints are rate limited per client IP and return `429` with `Retry-After`.\n",
     "version": "1.0.0"
   },
   "paths": {
@@ -290,6 +290,104 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/feedback": {
+      "post": {
+        "tags": [
+          "Generation"
+        ],
+        "summary": "Answer a paused (interactive) job",
+        "description": "Resume a job whose `status` is `awaiting_input`. Look at `pending.kind`:\n\n* `plan`: send `continue`, optionally with an edited `plan`.\n* `review`: read the draft and the evaluator's `suggested_points`, then send `rewrite` with your own\n  `feedback_points` (keep, edit, drop or add) and `sections`, or `publish` to accept the draft.",
+        "operationId": "submit_feedback_jobs__job_id__feedback_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate or queue limit hit; see Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The job is not waiting for input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The answer does not fit the step the job is paused at.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -723,6 +821,13 @@
             },
             "type": "array",
             "title": "Rewritten Sections"
+          },
+          "human_feedback": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Human Feedback"
           }
         },
         "type": "object",
@@ -775,6 +880,12 @@
             "title": "Audience",
             "description": "Who the post is written for.",
             "default": "general readers"
+          },
+          "interactive": {
+            "type": "boolean",
+            "title": "Interactive",
+            "description": "Human in the loop: pause after planning and after every evaluation so you can steer the run via POST /jobs/{id}/feedback. When false the pipeline runs unattended.",
+            "default": false
           }
         },
         "type": "object",
@@ -795,6 +906,63 @@
           "detail"
         ],
         "title": "ErrorResponse"
+      },
+      "FeedbackRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "rewrite",
+              "publish"
+            ],
+            "title": "Action",
+            "description": "At the plan step: continue. At the review step: rewrite (another writing pass) or publish."
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanEdit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Plan step only: your edited outline. Omit to approve it as proposed."
+          },
+          "feedback_points": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 400,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 15
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Points",
+            "description": "Review step: the guidance for the next pass. Start from `suggested_points`, then keep, edit, drop or add. Omit to use the evaluator's suggestions unchanged."
+          },
+          "sections": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Sections",
+            "description": "Review step: headings to rewrite. Empty uses `suggested_sections`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "FeedbackRequest"
       },
       "HTTPValidationError": {
         "properties": {
@@ -918,6 +1086,7 @@
             "enum": [
               "queued",
               "running",
+              "awaiting_input",
               "done",
               "failed"
             ],
@@ -926,6 +1095,11 @@
           "topic": {
             "type": "string",
             "title": "Topic"
+          },
+          "interactive": {
+            "type": "boolean",
+            "title": "Interactive",
+            "default": false
           },
           "stage": {
             "type": "string",
@@ -953,6 +1127,17 @@
             "type": "array",
             "title": "Events",
             "default": []
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set while status is awaiting_input: what the run is asking you. Answer with POST /jobs/{id}/feedback."
           },
           "elapsed_s": {
             "type": "number",
@@ -1048,6 +1233,106 @@
           "message"
         ],
         "title": "MessageResponse"
+      },
+      "PendingInput": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "review"
+            ],
+            "title": "Kind",
+            "description": "plan: approve/edit the outline. review: act on the evaluator's feedback."
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload",
+            "description": "What the pipeline produced and is asking you about."
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "PendingInput"
+      },
+      "PlanEdit": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 3,
+            "title": "Title"
+          },
+          "subtitle": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Subtitle",
+            "default": ""
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Excerpt",
+            "default": ""
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Tags"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/PlanSectionEdit"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Sections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "sections"
+        ],
+        "title": "PlanEdit"
+      },
+      "PlanSectionEdit": {
+        "properties": {
+          "heading": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 2,
+            "title": "Heading"
+          },
+          "brief": {
+            "type": "string",
+            "maxLength": 600,
+            "title": "Brief",
+            "default": ""
+          },
+          "key_points": {
+            "items": {
+              "type": "string",
+              "maxLength": 300,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "Key Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "heading"
+        ],
+        "title": "PlanSectionEdit"
       },
       "PostList": {
         "properties": {

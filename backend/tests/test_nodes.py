@@ -146,3 +146,62 @@ def test_events_are_delivered_to_the_sink(fake):
 
 def test_percentage_review_scores_are_normalised():
     assert LLMReview(score=85, feedback="x").score == 0.85
+
+
+def test_interactive_run_pauses_for_plan_and_review_and_applies_human_feedback(fake, monkeypatch):
+    from langgraph.types import Command
+
+    from app.graph.build import forget_run
+
+    monkeypatch.setattr(settings, "max_attempts", 3)
+    prompts = []
+    original = fake.invoke
+    fake.invoke = lambda messages: (prompts.append(messages[0].content), original(messages))[1]
+    graph = build_graph(checkpointed=True)
+    cfg = {"configurable": {"thread_id": "hitl-test"}}
+    try:
+        out = graph.invoke(BlogState(topic="sleep hygiene", interactive=True), cfg)
+        pause = out["__interrupt__"][0].value
+        assert pause["kind"] == "plan" and len(pause["plan"]["sections"]) == 4
+        assert fake.calls.count("section") == 0  # nothing written before the human approves
+
+        edited = pause["plan"] | {"title": "My Own Title", "sections": pause["plan"]["sections"][:2]}
+        out = graph.invoke(Command(resume={"action": "continue", "plan": edited}), cfg)
+        pause = out["__interrupt__"][0].value
+        assert pause["kind"] == "review" and pause["attempt"] == 1 and pause["can_rewrite"]
+        assert [s["heading"] for s in pause["sections"]] == ["Keep a schedule", "Fix your room"]
+        assert pause["suggested_points"] == ["Good."]
+
+        out = graph.invoke(Command(resume={
+            "action": "rewrite", "feedback_points": ["Add a bedtime example", "Good."], "sections": ["Fix your room"],
+        }), cfg)
+        assert any("Add a bedtime example" in p for p in prompts[-1:])
+        pause = out["__interrupt__"][0].value
+        assert pause["kind"] == "review" and pause["attempt"] == 2
+
+        result = graph.invoke(Command(resume={"action": "publish"}), cfg)
+        article = result["article"]
+        assert article.title == "My Own Title" and len(article.sections) == 2
+        assert [a.attempt for a in article.attempts] == [1, 2]
+        assert article.attempts[0].rewritten_sections == ["Fix your room"]
+        assert article.attempts[0].human_feedback == ["Add a bedtime example", "Good."]
+    finally:
+        forget_run("hitl-test")
+
+
+def test_interactive_review_cannot_exceed_attempt_cap(fake, monkeypatch):
+    from langgraph.types import Command
+
+    from app.graph.build import forget_run
+
+    monkeypatch.setattr(settings, "max_attempts", 1)
+    graph = build_graph(checkpointed=True)
+    cfg = {"configurable": {"thread_id": "hitl-cap"}}
+    try:
+        graph.invoke(BlogState(topic="sleep hygiene", interactive=True), cfg)
+        pause = graph.invoke(Command(resume={"action": "continue"}), cfg)["__interrupt__"][0].value
+        assert pause["can_rewrite"] is False
+        result = graph.invoke(Command(resume={"action": "rewrite"}), cfg)  # ignored: cap reached
+        assert "__interrupt__" not in result and len(result["article"].attempts) == 1
+    finally:
+        forget_run("hitl-cap")
