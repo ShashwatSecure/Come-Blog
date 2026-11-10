@@ -43,3 +43,8 @@ class BlogState(BaseModel):
     rewrite: list[str] = Field(default_factory=list)
     history: list[AttemptRecord] = Field(default_factory=list)
     started_at: float = 0.0
+
+    # Human-in-the-loop: when interactive, the graph pauses after planning and after every review.
+    interactive: bool = False
+    feedback_points: list[str] = Field(default_factory=list)
+    human_action: str = ""

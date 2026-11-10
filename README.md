@@ -20,10 +20,16 @@ and is plain static files, so it can be hosted anywhere.
 ## How it works
 
 ```
-research -> plan -> write sections -> quality gates -> reviewer -> publish
-                         ^                                  |
-                         +---- rewrite failing sections <---+  (bounded)
+research -> plan -> [you: approve/edit outline] -> write sections -> quality gates -> reviewer -> [you] -> publish
+                                                        ^                                           |
+                                                        +------- rewrite chosen sections <----------+  (bounded)
 ```
+
+The bracketed human steps only happen in **interactive** jobs (the UI's "Review each step myself" toggle, on
+by default, or `"interactive": true` on `POST /blogs`). After every evaluation you see the draft, the
+reviewer's score, its feedback split into editable points and the sections it would rewrite. You can keep,
+edit, delete or add points, pick the sections, then choose **Rewrite** (up to `COMEBLOG_MAX_ATTEMPTS`
+passes) or **Publish**. Without the flag the pipeline runs unattended, as before.
 
 See [`docs/production/`](docs/production/) for the design notes and measured results.
 
@@ -36,8 +42,9 @@ flowchart LR
     Q --> P
     subgraph P["LangGraph pipeline"]
         direction LR
-        R[research] --> PL[plan] --> W[write sections] --> QG[quality gates] --> RV[reviewer] --> PU[publish]
-        RV -. "rewrite weakest section (bounded)" .-> W
+        R[research] --> PL[plan] --> H1{{"you: outline"}} --> W[write sections] --> QG[quality gates] --> RV[reviewer] --> H2{{"you: feedback"}} --> PU[publish]
+        H2 -. "rewrite with your feedback (bounded)" .-> W
+        RV -. "unattended: rewrite weakest section (bounded)" .-> W
     end
     R <-->|"search, images"| EXT["Wikipedia, Commons, Tavily (optional)"]
     PL & W & RV <-->|"prompts"| OL["Ollama<br/>writer + reviewer models"]

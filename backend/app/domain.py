@@ -125,6 +125,7 @@ class AttemptRecord(BaseModel):
     llm_score: float | None = None
     feedback: str = ""
     rewritten_sections: list[str] = Field(default_factory=list)
+    human_feedback: list[str] = Field(default_factory=list)
 
 
 class Section(BaseModel):

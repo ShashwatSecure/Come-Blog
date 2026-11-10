@@ -1,9 +1,11 @@
 import hashlib
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from app import quality, research, store
@@ -95,16 +97,35 @@ def plan_node(state: BlogState, config: dict | None = None) -> dict:
     except Exception as exc:  # noqa: BLE001 - weak local models sometimes break the schema
         log_event(logging.WARNING, "plan_fallback", error=type(exc).__name__)
         plan = _fallback_plan(state)
+    plan = _finalise_plan(plan, state)
+    log_event(logging.INFO, "plan_ready", sections=len(plan.sections))
+    return {"plan": plan}
+
+
+def _finalise_plan(plan: ArticlePlan, state: BlogState) -> ArticlePlan:
     excerpt = plan.excerpt.strip()
     if len(excerpt) < 40:  # small models sometimes leave this empty; never publish a blank meta description
         seed = state.research.summary if state.research and state.research.summary else plan.subtitle
         excerpt = seed.strip() or f"A practical guide to {state.topic.strip().rstrip('?.').lower()}."
-    plan = plan.model_copy(update={
+    return plan.model_copy(update={
         "title": clamp_text(plan.title, 90),
         "excerpt": clamp_text(excerpt, 200),
         "tags": [t for t in dict.fromkeys(normalize_tag(t) for t in plan.tags) if t][:4],
     })
-    log_event(logging.INFO, "plan_ready", sections=len(plan.sections))
+
+
+def human_plan_node(state: BlogState, config: dict | None = None) -> dict:
+    """Pause so a person can approve or edit the outline before any section is written."""
+    if not state.interactive:
+        return {}
+    assert state.plan is not None
+    reply = interrupt({"kind": "plan", "plan": state.plan.model_dump()}) or {}
+    edited = reply.get("plan")
+    if not edited:
+        _emit(config, "plan", "Outline approved as proposed.")
+        return {}
+    plan = _finalise_plan(ArticlePlan.model_validate(edited), state)
+    _emit(config, "plan", f"Outline updated with your edits ({len(plan.sections)} sections).")
     return {"plan": plan}
 
 
@@ -131,7 +152,7 @@ def _write_section(state: BlogState, index: int, previous: SectionDraft | None, 
         f"{cite_rule}"
     )
     if previous and feedback:
-        system += f"\nRevise the previous version. Reviewer feedback: {feedback}"
+        system += f"\nRevise the previous version. Address this editor feedback:\n{feedback}"
     other = [s.heading for i, s in enumerate(plan.sections) if i != index]
     user = (
         f"Article title: {plan.title}\nThis section: {section.heading}\nPurpose: {section.brief}\n"
@@ -152,7 +173,10 @@ def write_sections_node(state: BlogState, config: dict | None = None) -> dict:
         targets = list(range(len(state.plan.sections)))
     verb = "Rewriting" if state.rewrite else "Writing"
     _emit(config, "write", f"{verb} {len(targets)} section(s) (attempt {state.attempt})...")
-    feedback = state.quality.llm_feedback if state.quality else ""
+    if state.feedback_points:
+        feedback = "\n".join(f"- {p}" for p in state.feedback_points)
+    else:
+        feedback = state.quality.llm_feedback if state.quality else ""
     drafts = dict(state.drafts)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {
@@ -251,7 +275,9 @@ def review_node(state: BlogState, config: dict | None = None) -> dict:
 
 def route_after_review(state: BlogState) -> str:
     assert state.quality is not None
-    if state.quality.passed or state.attempt >= settings.max_attempts:
+    if state.interactive:
+        route = "human"
+    elif state.quality.passed or state.attempt >= settings.max_attempts:
         route = "publish"
     else:
         route = "retry"
@@ -259,20 +285,79 @@ def route_after_review(state: BlogState) -> str:
     return route
 
 
+def _suggested_sections(state: BlogState) -> list[str]:
+    assert state.quality is not None and state.plan is not None
+    headings = {s.heading for s in state.plan.sections}
+    llm_weak = [h for h in state.rewrite if h in headings]
+    return list(dict.fromkeys(quality.failing_headings(state.quality) + llm_weak))
+
+
+def _suggested_points(report) -> list[str]:
+    """Split the reviewer's prose and the failing gates into editable, one-line feedback points."""
+    points = [s.strip() for s in re.split(r"(?<=[.!?])\s+", report.llm_feedback or "") if s.strip()]
+    for check in report.checks:
+        if check.blocking and not check.passed:
+            kind, _, section = check.name.partition(":")
+            points.append(f"{section}: fix {kind.replace('_', ' ')} ({check.detail})" if section else f"Fix {kind.replace('_', ' ')} ({check.detail})")
+    return points
+
+
+def human_review_node(state: BlogState, config: dict | None = None) -> dict:
+    """Pause so a person can accept, edit or extend the evaluator's feedback and decide: rewrite or publish."""
+    if not state.interactive:
+        return {}
+    assert state.quality is not None and state.article is not None and state.plan is not None
+    q = state.quality
+    can_rewrite = state.attempt < settings.max_attempts
+    suggested_sections = _suggested_sections(state)
+    suggested_points = _suggested_points(q)
+    reply = interrupt({
+        "kind": "review",
+        "attempt": state.attempt,
+        "max_attempts": settings.max_attempts,
+        "can_rewrite": can_rewrite,
+        "passed": q.passed,
+        "llm_score": q.llm_score,
+        "llm_feedback": q.llm_feedback,
+        "failing_checks": [c.model_dump() for c in q.checks if not c.passed],
+        "suggested_points": suggested_points,
+        "suggested_sections": suggested_sections,
+        "sections": [{"heading": s.heading, "body_md": s.body_md} for s in state.article.sections],
+        "word_count": state.article.word_count,
+    }) or {}
+    action = "rewrite" if reply.get("action") == "rewrite" and can_rewrite else "publish"
+    if action == "publish":
+        _emit(config, "review", "You approved the draft for publishing.")
+        return {"human_action": "publish"}
+    headings = {s.heading for s in state.plan.sections}
+    sections = [h for h in reply.get("sections") or [] if h in headings] or suggested_sections or [state.plan.sections[0].heading]
+    given = reply.get("feedback_points")
+    points = [p.strip() for p in given if p and p.strip()] if given is not None else suggested_points
+    _emit(config, "review", f"Your feedback received: {len(points)} point(s); rewriting {', '.join(sections)}.")
+    return {"human_action": "rewrite", "feedback_points": points, "rewrite": sections}
+
+
+def route_after_human(state: BlogState) -> str:
+    route = "retry" if state.human_action == "rewrite" and state.attempt < settings.max_attempts else "publish"
+    log_event(logging.INFO, "route_selected", route=route, attempt=state.attempt, by="human")
+    return route
+
+
 def prepare_retry_node(state: BlogState, config: dict | None = None) -> dict:
     assert state.quality is not None and state.article is not None and state.plan is not None
-    headings = quality.failing_headings(state.quality)
-    llm_weak = [h for h in state.rewrite if h in {s.heading for s in state.plan.sections}]
-    targets = list(dict.fromkeys(headings + llm_weak))
+    human = state.interactive and state.human_action == "rewrite"
+    targets = list(state.rewrite) if human else _suggested_sections(state)
     if not targets:
         targets = [state.plan.sections[0].heading]
     record = AttemptRecord(
         attempt=state.attempt, word_count=state.article.word_count,
         checks_passed=state.quality.checks_passed, checks_total=state.quality.checks_total,
         llm_score=state.quality.llm_score, feedback=state.quality.llm_feedback, rewritten_sections=targets,
+        human_feedback=list(state.feedback_points) if human else [],
     )
-    _emit(config, "retry", f"Quality bar not met; rewriting: {', '.join(targets)}")
-    return {"attempt": state.attempt + 1, "rewrite": targets, "history": [*state.history, record]}
+    reason = "Rewriting with your feedback" if human else "Quality bar not met; rewriting"
+    _emit(config, "retry", f"{reason}: {', '.join(targets)}")
+    return {"attempt": state.attempt + 1, "rewrite": targets, "history": [*state.history, record], "human_action": ""}
 
 
 # --------------------------------------------------------------------------- publish

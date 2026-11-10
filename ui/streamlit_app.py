@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 
 import requests
@@ -24,6 +24,79 @@ def error_text(exc: requests.RequestException) -> str:
     return f"{exc} {detail[:200]}".strip()
 
 
+def send_feedback(job_id: str, body: dict) -> None:
+    try:
+        api("POST", f"/jobs/{job_id}/feedback", json=body)
+    except requests.RequestException as exc:
+        st.error(f"Could not send your feedback: {error_text(exc)}")
+        return
+    st.rerun()
+
+
+def _lines(text: str) -> list[str]:
+    return [line.strip(" -•\t") for line in text.splitlines() if line.strip(" -•\t")]
+
+
+def render_plan_review(job_id: str, plan: dict) -> None:
+    st.subheader("🧑 Your turn: review the outline")
+    st.caption("Nothing has been written yet. Edit headings, briefs and key points, drop sections, or approve as is.")
+    with st.form(f"plan-{job_id}"):
+        title = st.text_input("Title", plan["title"])
+        subtitle = st.text_input("Subtitle", plan.get("subtitle", ""))
+        sections = []
+        for i, s in enumerate(plan["sections"]):
+            with st.container(border=True):
+                keep = st.checkbox("Keep this section", value=True, key=f"keep-{job_id}-{i}")
+                heading = st.text_input("Heading", s["heading"], key=f"h-{job_id}-{i}")
+                brief = st.text_input("Brief", s.get("brief", ""), key=f"b-{job_id}-{i}")
+                points = st.text_area("Key points (one per line)", "\n".join(s.get("key_points", [])), key=f"k-{job_id}-{i}")
+                if keep and heading.strip():
+                    sections.append({"heading": heading.strip(), "brief": brief, "key_points": _lines(points)[:6]})
+        extra = st.text_input("Add a section (optional heading)", key=f"new-{job_id}")
+        if extra.strip():
+            sections.append({"heading": extra.strip(), "brief": extra.strip(), "key_points": []})
+        if st.form_submit_button("Approve outline and start writing", type="primary"):
+            edited = {**plan, "title": title, "subtitle": subtitle, "sections": sections}
+            send_feedback(job_id, {"action": "continue", "plan": edited if edited != plan else None})
+
+
+def render_draft_review(job_id: str, p: dict) -> None:
+    st.subheader(f"🧑 Your turn: draft {p['attempt']} of max {p['max_attempts']}")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Evaluator score", f"{p['llm_score']:.2f}" if p["llm_score"] is not None else "n/a")
+    m2.metric("Quality gates", "passed" if p["passed"] else f"{len(p['failing_checks'])} failing")
+    m3.metric("Words", f"{p['word_count']:,}")
+    if p["llm_feedback"]:
+        st.info(f"**Evaluator says:** {p['llm_feedback']}")
+    for c in p["failing_checks"]:
+        st.warning(f"{c['name']}: {c['detail']}")
+    with st.expander("Read the draft", expanded=True):
+        for s in p["sections"]:
+            st.markdown(f"### {s['heading']}\n{s['body_md']}")
+    with st.form(f"review-{job_id}-{p['attempt']}"):
+        points = st.text_area(
+            "Feedback for the next draft (one point per line). Keep what the evaluator got right, fix or delete what it "
+            "got wrong, and add your own points.", "\n".join(p["suggested_points"]), height=160)
+        headings = [s["heading"] for s in p["sections"]]
+        targets = st.multiselect("Sections to rewrite", headings, default=[h for h in p["suggested_sections"] if h in headings])
+        b1, b2 = st.columns(2)
+        rewrite = b1.form_submit_button("Rewrite with this feedback", type="primary", disabled=not p["can_rewrite"])
+        publish = b2.form_submit_button("Approve and publish")
+        if not p["can_rewrite"]:
+            st.caption("The rewrite limit is reached; this draft can only be published.")
+        if rewrite:
+            send_feedback(job_id, {"action": "rewrite", "feedback_points": _lines(points), "sections": targets})
+        elif publish:
+            send_feedback(job_id, {"action": "publish"})
+
+
+def render_pending(job_id: str, pending: dict) -> None:
+    if pending["kind"] == "plan":
+        render_plan_review(job_id, pending["payload"]["plan"])
+    else:
+        render_draft_review(job_id, pending["payload"])
+
+
 st.title("📝 Come-Blog")
 st.caption("Researched, written, reviewed and illustrated by local models. Every claim links to a source.")
 create_tab, library_tab = st.tabs(["Create", "Library"])
@@ -36,8 +109,10 @@ with create_tab:
         length = c1.selectbox("Length", ["short", "medium", "long"], index=1, help="short ≈ 3 sections, medium ≈ 4, long ≈ 6")
         tone = c2.selectbox("Tone", ["conversational", "professional", "playful", "authoritative"])
         audience = c3.text_input("Audience", "general readers", max_chars=80)
+        interactive = st.toggle("Review each step myself (human in the loop)", value=True,
+                                help="Pause after the outline and after every evaluation so you can steer the next draft.")
     with right:
-        st.markdown("**Pipeline**  \nResearch → Plan → Write → Quality gates → Review → Publish")
+        st.markdown("**Pipeline**  \nResearch → Plan → 🧑 You → Write → Quality gates → Review → 🧑 You → Publish")
         if st.button("Check Ollama"):
             try:
                 st.success(api("GET", "/ollama/check", timeout=120).json()["message"])
@@ -61,8 +136,10 @@ with create_tab:
 
     if p2.button("Generate blog", type="primary", disabled=not ready):
         try:
-            job = api("POST", "/blogs", json={"topic": topic, "length": length, "tone": tone, "audience": audience}).json()
+            job = api("POST", "/blogs", json={"topic": topic, "length": length, "tone": tone, "audience": audience,
+                                               "interactive": interactive}).json()
             st.session_state.job_id = job["id"]
+            st.session_state.pop("last_slug", None)
         except requests.RequestException as exc:
             st.error(f"Could not start generation: {error_text(exc)}")
 
@@ -76,8 +153,12 @@ with create_tab:
                 st.error(f"Lost contact with the API: {error_text(exc)}")
                 break
             bar.progress(job["progress"])
-            status_box.info(f"**{job['status'].title()}** · {job['message'] or 'Waiting for a worker...'} · {job['elapsed_s']}s")
-            log_box.code("\n".join(f"{e['stage']:9} {e['message']}" for e in job["events"][-8:]) or "queued", language="text")
+            state = job["status"].replace("_", " ").title()
+            status_box.info(f"**{state}** · {job['message'] or 'Waiting for a worker...'} · {job['elapsed_s']}s")
+            log_box.code("\n".join(f"{e['stage']:9} {e['message']}" for e in job["events"][-12:]) or "queued", language="text")
+            if job["status"] == "awaiting_input":
+                render_pending(job_id, job["pending"])
+                break
             if job["status"] == "done":
                 st.session_state.last_slug = job["slug"]
                 st.session_state.pop("job_id")
@@ -109,6 +190,8 @@ with create_tab:
                 for a in post["attempts"]:
                     st.write(f"Pass {a['attempt']}: {a['word_count']} words · checks {a['checks_passed']}/{a['checks_total']} · "
                              f"score {a['llm_score'] if a['llm_score'] is not None else 'n/a'} · {a['feedback']}")
+                    if a.get("human_feedback"):
+                        st.caption("Your feedback for the next pass: " + " · ".join(a["human_feedback"]))
             st.divider()
             st.markdown(requests.get(f"{API_BASE}/posts/{slug}/markdown", headers=HEADERS, timeout=30).text
                         .replace("(image-", f"({API_BASE}/site/posts/{slug}/image-"))
